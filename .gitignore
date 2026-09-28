@@ -1,0 +1,42 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.env
+
+# PyInstaller & Desktop legacy artifacts
+archive_legacy_desktop/
+build/
+dist/
+*.spec
+*.lnk
+magnifier.ico
+magnifier.png
+Run_Dental_AI.bat
+build_mac.command
+requirements_mac.txt
+make_shortcut.ps1
+create_shortcuts.py
+generate_icon.py
+
+# Heavy presentation & reference documents
+*.pptx
+paper/
+case_screenshots/
+
+# System & IDE files
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
+.vscode/
+.idea/
+
+# Local cache & backups
+ai_responses/*.json
+backups/*.csv
