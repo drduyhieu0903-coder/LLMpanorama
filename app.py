@@ -31,104 +31,14 @@ except Exception:
 def parse_ai_response(raw_text: str) -> dict:
     """
     Tự động phân tích và trích xuất các trường phân loại y khoa từ phản hồi AI.
-    Hỗ trợ cả định dạng JSON lẫn văn bản báo cáo tự nhiên.
+    Hỗ trợ cả định dạng JSON, Markdown, Chain-of-Thought lẫn văn bản báo cáo tự nhiên.
     """
     if hasattr(dm, "parse_ai_response"):
         try:
-            res = dm.parse_ai_response(raw_text)
-            if res:
-                return res
-        except Exception:
-            pass
-
-    if not raw_text or len(raw_text.strip()) < 5:
-        return {}
-
-    text = raw_text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
-    result = {}
-
-    # 1. Thử bóc tách JSON
-    json_matches = re.findall(r'\{[^{}]*\}', text, re.DOTALL)
-    for j_str in json_matches:
-        try:
-            data = json.loads(j_str)
-            for k, v in data.items():
-                k_lower = str(k).lower().replace("_", "").replace(" ", "").replace("-", "")
-                v_str = str(v).strip()
-                if "class" in k_lower and "position" not in k_lower and "winter" not in k_lower:
-                    c_m = re.search(r'\b(III|II|I|3|2|1)\b', v_str, re.I)
-                    if c_m:
-                        val = c_m.group(1).upper()
-                        result["Pell_Gregory_Class"] = "I" if val == "1" else ("II" if val == "2" else ("III" if val == "3" else val))
-                elif "position" in k_lower or "pos" in k_lower:
-                    p_m = re.search(r'\b([ABC])\b', v_str, re.I)
-                    if p_m:
-                        result["Pell_Gregory_Position"] = p_m.group(1).upper()
-                elif "winter" in k_lower or "angulation" in k_lower:
-                    w_m = re.search(r'\b(mesioangular|horizontal|vertical|distoangular|buccolingual|others?)\b', v_str, re.I)
-                    if w_m:
-                        w_cap = w_m.group(1).capitalize()
-                        result["Winter_Class"] = "Others" if w_cap.startswith("Other") else w_cap
-                elif "confidence" in k_lower or "conf" in k_lower:
-                    try:
-                        num = int(float(v_str.replace('%', '')))
-                        if 0 <= num <= 100:
-                            result["Confidence"] = num
-                    except (ValueError, TypeError):
-                        pass
-        except Exception:
-            pass
-
-    # 2. Regex fallback / bổ sung
-    if "Winter_Class" not in result:
-        w_match = re.search(r'\b(mesioangular|horizontal|vertical|distoangular|buccolingual|others?)\b', text, re.I)
-        if w_match:
-            w_val = w_match.group(1).capitalize()
-            if w_val.startswith("Other"):
-                w_val = "Others"
-            result["Winter_Class"] = w_val
-
-    if "Pell_Gregory_Class" not in result:
-        c_match = re.search(r'(?:class|p&g_class|p&g class)[\"\'\s:]*(?:class\s*)?(iii|ii|i|3|2|1)\b', text, re.I)
-        if c_match:
-            c_val = c_match.group(1).upper()
-            if c_val == "1": c_val = "I"
-            elif c_val == "2": c_val = "II"
-            elif c_val == "3": c_val = "III"
-            result["Pell_Gregory_Class"] = c_val
-
-    if "Pell_Gregory_Position" not in result:
-        p_match = re.search(r'(?:position|p&g_position|p&g position)[\"\'\s:]*(?:position\s*)?([abc])\b', text, re.I)
-        if p_match:
-            result["Pell_Gregory_Position"] = p_match.group(1).upper()
-
-    if "Pell_Gregory_Class" not in result or "Pell_Gregory_Position" not in result:
-        combo = re.search(r'\b(I|II|III)\s*[-–/]\s*([A-C])\b', text, re.I)
-        if combo:
-            result["Pell_Gregory_Class"] = combo.group(1).upper()
-            result["Pell_Gregory_Position"] = combo.group(2).upper()
-
-    if "Confidence" not in result:
-        conf_match = re.search(r'(?:confidence|độ tin cậy)[^\n\r]*?(\d{1,3})\s*%', text, re.I)
-        if not conf_match:
-            conf_match = re.search(r'[\"\']?confidence[\"\']?\s*[:=]\s*(\d{1,3})', text, re.I)
-        if not conf_match:
-            conf_match = re.search(r'\(?\b([1-9]\d?|100)\s*%\)?', text)
-
-        if conf_match:
-            val = int(conf_match.group(1))
-            if 0 <= val <= 100:
-                result["Confidence"] = val
-
-    if "Pederson_Level" not in result:
-        if re.search(r'\b(nhẹ|mild|3[-–]4)\b', text, re.I):
-            result["Pederson_Level"] = "Nhẹ (3–4)"
-        elif re.search(r'\b(trung bình|moderate|5[-–]6)\b', text, re.I):
-            result["Pederson_Level"] = "Trung bình (5–6)"
-        elif re.search(r'\b(khó|difficult|high|7[-–]10)\b', text, re.I):
-            result["Pederson_Level"] = "Khó (7–10)"
-
-    return result
+            return dm.parse_ai_response(raw_text)
+        except Exception as e:
+            print(f"Lỗi parse AI response: {e}")
+    return {}
 
 # ── Cấu hình trang Streamlit ────────────────────────────
 st.set_page_config(
@@ -306,8 +216,9 @@ def init_state():
         else:
             st.session_state.ai_model = dm.MODELS_LIST[0]
 
-    if "prompt_type" not in st.session_state:
-        st.session_state.prompt_type = prog.get("prompt", "P2 – Structured Medical")
+    if "prompt_type" not in st.session_state or st.session_state.prompt_type not in dm.PROMPTS:
+        p_val = prog.get("prompt", "P1 – Basic")
+        st.session_state.prompt_type = p_val if p_val in dm.PROMPTS else list(dm.PROMPTS.keys())[0]
         
     df_curr = dm.load_dataset(sort_by_case=True)
     all_cases = get_all_ordered_cases(df_curr)
@@ -695,10 +606,12 @@ with tabs[0]:
         </div>
         """, unsafe_allow_html=True)
 
+        prompt_keys = list(dm.PROMPTS.keys())
+        p_idx = prompt_keys.index(st.session_state.prompt_type) if st.session_state.prompt_type in prompt_keys else 0
         selected_prompt = st.selectbox(
             "Chọn loại Prompt chuẩn:",
-            options=list(dm.PROMPTS.keys()),
-            index=list(dm.PROMPTS.keys()).index(st.session_state.prompt_type) if st.session_state.prompt_type in dm.PROMPTS else 1,
+            options=prompt_keys,
+            index=p_idx,
             key="prompt_select"
         )
         st.session_state.prompt_type = selected_prompt
@@ -733,16 +646,28 @@ with tabs[0]:
             raw_text = st.session_state.get(f"form_ai_response_{c_id}", "")
             parsed = parse_ai_response(raw_text)
             if parsed:
-                if "Pell_Gregory_Class" in parsed:
+                if "Pell_Gregory_Class" in parsed and parsed["Pell_Gregory_Class"] in dm.PG_CLASSES:
                     st.session_state[f"form_pg_class_{c_id}"] = parsed["Pell_Gregory_Class"]
-                if "Pell_Gregory_Position" in parsed:
+                if "Pell_Gregory_Position" in parsed and parsed["Pell_Gregory_Position"] in dm.PG_POSITIONS:
                     st.session_state[f"form_pg_pos_{c_id}"] = parsed["Pell_Gregory_Position"]
-                if "Winter_Class" in parsed:
+                if "Winter_Class" in parsed and parsed["Winter_Class"] in dm.WINTER_VALUES:
                     st.session_state[f"form_winter_{c_id}"] = parsed["Winter_Class"]
-                if "Confidence" in parsed:
-                    st.session_state[f"form_conf_{c_id}"] = parsed["Confidence"]
-                if "Pederson_Level" in parsed:
+                if "Confidence" in parsed and parsed["Confidence"] is not None:
+                    try:
+                        st.session_state[f"form_conf_{c_id}"] = int(parsed["Confidence"])
+                    except Exception:
+                        pass
+                if "Pederson_Level" in parsed and parsed["Pederson_Level"] in dm.PEDERSON_LEVELS:
                     st.session_state[f"form_pederson_{c_id}"] = parsed["Pederson_Level"]
+
+                # Đồng bộ chuỗi kết hợp P&G
+                cur_cls = st.session_state.get(f"form_pg_class_{c_id}", dm.PG_CLASSES[0])
+                cur_pos = st.session_state.get(f"form_pg_pos_{c_id}", dm.PG_POSITIONS[0])
+                if cur_cls == "Không xác định" or cur_pos == "Không xác định":
+                    st.session_state[f"form_pg_full_{c_id}"] = "Không xác định"
+                else:
+                    st.session_state[f"form_pg_full_{c_id}"] = f"{cur_cls}-{cur_pos}"
+
                 st.session_state[f"auto_parsed_alert_{c_id}"] = parsed
                 return True
             return False
@@ -835,7 +760,8 @@ with tabs[0]:
                 full_pg = "Không xác định"
             else:
                 full_pg = f"{val_pg_class}-{val_pg_pos}"
-            st.text_input("P&G Kết hợp:", value=full_pg, disabled=True, key=f"form_pg_full_{cur_c}")
+            st.session_state[f"form_pg_full_{cur_c}"] = full_pg
+            st.text_input("P&G Kết hợp:", value=full_pg, disabled=True)
 
         # 2. Winter & Pederson
         w_c1, w_c2 = st.columns(2)

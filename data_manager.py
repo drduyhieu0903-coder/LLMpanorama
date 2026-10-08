@@ -76,7 +76,8 @@ HALLUCINATION_LEVELS = ["Không", "Có – Nhẹ", "Có – Rõ ràng"]
 PROMPTS = {
     "P1 – Basic": (
         "Please classify this impacted mandibular third molar based on the panoramic "
-        "X-ray using Pell & Gregory and Winter classification systems."
+        "X-ray using Pell & Gregory and Winter classification systems. "
+        "Also state your confidence level (0–100%)."
     ),
     "P2 – Structured Medical": (
         "You are an oral and maxillofacial surgery specialist. Analyze the provided panoramic "
@@ -95,27 +96,12 @@ PROMPTS = {
         "Step 4 – Confidence: State your confidence level (0–100%).\n\n"
         'Output format (JSON):\n{\n  "P&G_class": "",\n  "P&G_position": "",\n'
         '  "Winter": "",\n  "confidence": 0,\n  "reasoning": ""\n}'
-    ),
-    "P3 – Feedback-assisted": (
-        "You are an oral and maxillofacial surgery specialist. "
-        "[Apply all steps from the Structured Medical Prompt above]\n\n"
-        "COMMON ERRORS TO AVOID:\n"
-        "  1. Do NOT confuse the retromolar pad with the ramus border\n"
-        "  2. Verify tooth angulation against the mandibular plane, NOT the image border\n"
-        "  3. If the crown is fully covered by bone → default Position C unless landmarks "
-        "clearly indicate otherwise\n"
-        "  4. Do not hallucinate anatomical structures not visible on the film\n\n"
-        "FEW-SHOT EXAMPLE:\n"
-        "  Image A → Class II, Position B, Mesioangular, Confidence 82%\n"
-        "  Image B → Class I, Position A, Vertical, Confidence 90%\n\n"
-        "Now classify the provided image following all guidelines above."
     )
 }
 
 PROMPT_TAGS = {
-    "P1 – Basic": "P1: Prompt tối giản – mô phỏng người dùng thông thường",
-    "P2 – Structured Medical": "P2: Cấu trúc y khoa đầy đủ + Chain-of-Thought + JSON output",
-    "P3 – Feedback-assisted": "P3: Few-shot examples + hướng dẫn tránh lỗi thường gặp"
+    "P1 – Basic": "P1: Prompt cơ bản kèm yêu cầu độ tin cậy – mô phỏng người dùng thông thường",
+    "P2 – Structured Medical": "P2: Cấu trúc y khoa đầy đủ + Chain-of-Thought + JSON output"
 }
 
 
@@ -578,103 +564,247 @@ def save_session_progress(progress_data: dict):
 def parse_ai_response(raw_text: str) -> dict:
     """
     Tự động phân tích và trích xuất các trường phân loại y khoa từ phản hồi AI
-    (hỗ trợ cả định dạng JSON lẫn văn bản tự nhiên).
+    (hỗ trợ cả định dạng JSON lẫn văn bản tự nhiên, Markdown, Chain-of-Thought).
     """
-    if not raw_text or len(raw_text.strip()) < 5:
+    if not raw_text or len(raw_text.strip()) < 4:
         return {}
 
     text = raw_text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
     result = {}
 
-    # ── 1. Thử bóc tách theo khối JSON nếu có ───────────
-    json_match = re.search(r'\{[^{}]*"P&G[^{}]*\}', text, re.DOTALL | re.IGNORECASE)
-    if not json_match:
-        json_match = re.search(r'\{.*\}', text, re.DOTALL)
-    
-    if json_match:
+    # Helper: Chuẩn hóa phân loại Class sang "I", "II", "III"
+    def normalize_class(val_str: str) -> str:
+        if not val_str:
+            return ""
+        val_str = str(val_str).strip().upper()
+        m = re.search(r'\b(III|II|I|3|2|1)\b', val_str, re.I)
+        if m:
+            v = m.group(1).upper()
+            if v in ("1", "I"): return "I"
+            if v in ("2", "II"): return "II"
+            if v in ("3", "III"): return "III"
+        return ""
+
+    # Helper: Chuẩn hóa phân loại Position sang "A", "B", "C"
+    def normalize_position(val_str: str) -> str:
+        if not val_str:
+            return ""
+        val_str = str(val_str).strip().upper()
+        m = re.search(r'\b([ABC])\b', val_str)
+        if m:
+            return m.group(1).upper()
+        return ""
+
+    # Helper: Chuẩn hóa Winter's Classification
+    def normalize_winter(val_str: str) -> str:
+        if not val_str:
+            return ""
+        s = str(val_str).strip()
+        m = re.search(r'\b(mesio[- ]?angular|disto[- ]?angular|horizontal|vertical|bucco[- ]?lingual|buccal|lingual|others?|transverse|inverted)\b', s, re.I)
+        if m:
+            w = m.group(1).lower().replace("-", "").replace(" ", "")
+            if "mesio" in w: return "Mesioangular"
+            if "disto" in w: return "Distoangular"
+            if "horiz" in w: return "Horizontal"
+            if "vert" in w: return "Vertical"
+            if "bucco" in w or "buccal" in w or "lingual" in w: return "Buccolingual"
+            return "Others"
+        return ""
+
+    # Helper: Chuẩn hóa Confidence
+    def normalize_conf(val) -> int:
         try:
-            data = json.loads(json_match.group(0))
-            for k, v in data.items():
-                k_lower = str(k).lower().replace("_", "").replace(" ", "")
-                v_str = str(v).strip()
-                if "class" in k_lower and "position" not in k_lower and "winter" not in k_lower:
-                    c_m = re.search(r'\b(III|II|I|3|2|1)\b', v_str, re.I)
-                    if c_m:
-                        val = c_m.group(1).upper()
-                        result["Pell_Gregory_Class"] = "I" if val == "1" else ("II" if val == "2" else ("III" if val == "3" else val))
-                elif "position" in k_lower:
-                    p_m = re.search(r'\b([ABC])\b', v_str, re.I)
-                    if p_m:
-                        result["Pell_Gregory_Position"] = p_m.group(1).upper()
-                elif "winter" in k_lower:
-                    w_m = re.search(r'\b(mesioangular|horizontal|vertical|distoangular|buccolingual|others?)\b', v_str, re.I)
-                    if w_m:
-                        w_cap = w_m.group(1).capitalize()
-                        result["Winter_Class"] = "Others" if w_cap.startswith("Other") else w_cap
-                elif "confidence" in k_lower:
-                    try:
-                        num = int(float(v))
-                        if 0 <= num <= 100:
-                            result["Confidence"] = num
-                    except (ValueError, TypeError):
-                        pass
+            if isinstance(val, (int, float)):
+                v = int(val)
+                if 0 <= v <= 1: v = int(v * 100)
+                if 0 <= v <= 100: return v
+            s = str(val).strip()
+            m = re.search(r'(\d{1,3})\s*%', s)
+            if not m:
+                m = re.search(r'\b([1-9]\d?|100)\b', s)
+            if m:
+                v = int(m.group(1))
+                if 0 <= v <= 100: return v
+        except Exception:
+            pass
+        return None
+
+    # Helper: Chuẩn hóa Pederson Level
+    def normalize_pederson(val_str: str) -> str:
+        s = str(val_str)
+        if re.search(r'\b(nhẹ|mild|easy|3[-–]4)\b', s, re.I):
+            return "Nhẹ (3–4)"
+        if re.search(r'\b(trung bình|moderate|medium|5[-–]6)\b', s, re.I):
+            return "Trung bình (5–6)"
+        if re.search(r'\b(khó|difficult|high|hard|7[-–]10)\b', s, re.I):
+            return "Khó (7–10)"
+        return ""
+
+    # ─────────────────────────────────────────────────────────────
+    # GIAI ĐOẠN 1: Bóc tách khối JSON (Code blocks hoặc Raw JSON)
+    # ─────────────────────────────────────────────────────────────
+    json_candidates = []
+    for match in re.finditer(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text, re.I):
+        json_candidates.append(match.group(1))
+    for match in re.finditer(r'\{[^{}]*(?:p&g|winter|class|confidence)[^{}]*\}', text, re.I):
+        json_candidates.append(match.group(0))
+
+    for j_str in json_candidates:
+        clean_j = re.sub(r'//[^\n\r]*', '', j_str)
+        clean_j = re.sub(r',\s*\}', '}', clean_j)
+        try:
+            data = json.loads(clean_j)
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    k_clean = str(k).lower().replace("_", "").replace(" ", "").replace("-", "").replace("&", "")
+                    v_str = str(v)
+
+                    # Class
+                    if "class" in k_clean and "winter" not in k_clean and "position" not in k_clean:
+                        cls = normalize_class(v_str)
+                        if cls and "Pell_Gregory_Class" not in result:
+                            result["Pell_Gregory_Class"] = cls
+                    
+                    # Position
+                    elif "position" in k_clean or k_clean in ("pos", "pgpos", "pgposition"):
+                        pos = normalize_position(v_str)
+                        if pos and "Pell_Gregory_Position" not in result:
+                            result["Pell_Gregory_Position"] = pos
+
+                    # Combined P&G field
+                    elif ("pell" in k_clean or "pg" in k_clean) and "winter" not in k_clean:
+                        m_cls = normalize_class(v_str)
+                        m_pos = normalize_position(v_str)
+                        if m_cls and "Pell_Gregory_Class" not in result:
+                            result["Pell_Gregory_Class"] = m_cls
+                        if m_pos and "Pell_Gregory_Position" not in result:
+                            result["Pell_Gregory_Position"] = m_pos
+
+                    # Winter
+                    elif "winter" in k_clean or "angulation" in k_clean:
+                        w = normalize_winter(v_str)
+                        if w and "Winter_Class" not in result:
+                            result["Winter_Class"] = w
+
+                    # Confidence
+                    elif "conf" in k_clean:
+                        c = normalize_conf(v)
+                        if c is not None and "Confidence" not in result:
+                            result["Confidence"] = c
+
+                    # Pederson
+                    elif "pederson" in k_clean or "difficulty" in k_clean:
+                        ped = normalize_pederson(v_str)
+                        if ped and "Pederson_Level" not in result:
+                            result["Pederson_Level"] = ped
         except Exception:
             pass
 
-    # ── 2. Trích xuất bằng Regex cho văn bản tự nhiên / bổ sung ──
-    # Winter's Classification
+    if "Pell_Gregory_Class" in result and "Pell_Gregory_Position" in result and "Winter_Class" in result:
+        return result
+
+    # ─────────────────────────────────────────────────────────────
+    # GIAI ĐOẠN 2: Bóc tách văn bản tự nhiên (Text Parsing)
+    # ─────────────────────────────────────────────────────────────
+    # 1. Tìm phần Summary / Conclusion nếu có
+    summary_text = ""
+    summary_match = re.search(
+        r'(?:###?\s*)?(?:Summary|Conclusion|Final Diagnosis|Final Classification|Impression|Kết luận|Tóm tắt|Results?|Overall)[:\s\n]+([\s\S]+)$',
+        text,
+        re.I
+    )
+    if summary_match:
+        summary_text = summary_match.group(1).strip()
+
+    # 2. Xóa các dòng định nghĩa lý thuyết từ prompt để tránh bắt nhầm Class I / Pos A
+    cleaned_full_text = re.sub(r'Class\s*(?:I|II|III|1|2|3)\s*:\s*Crown\s+[^.\n\r]+[.\n\r]?', '', text, flags=re.I)
+    cleaned_full_text = re.sub(r'Position\s*[ABC]\s*:\s*Crown\s+[^.\n\r]+[.\n\r]?', '', cleaned_full_text, flags=re.I)
+
+    scan_scopes = []
+    if summary_text:
+        scan_scopes.append(summary_text)
+    scan_scopes.append(cleaned_full_text)
+    scan_scopes.append(text)
+
+    # ── A. Trích xuất Pell & Gregory ───────────────────────────
+    for scope in scan_scopes:
+        if "Pell_Gregory_Class" in result and "Pell_Gregory_Position" in result:
+            break
+
+        # Bỏ phần chẩn đoán phụ trong ngoặc đơn "(or ...)" để ưu tiên chẩn đoán chính
+        scope_clean = re.sub(r'\(or\s+[^)]+\)', '', scope, flags=re.I)
+        
+        # A1. Dạng kết hợp trực tiếp: "Class II, Position B" hoặc "P&G: Class II, Position B"
+        combo_match = re.search(
+            r'(?:Pell\s*(?:&|and)?\s*Gregory|P&G)?[\s\w:\-]*?Class\s*(III|II|I|3|2|1)[,\s/]+(?:Position\s*|Pos\s*)?([ABC])\b',
+            scope_clean,
+            re.I
+        )
+        if combo_match:
+            if "Pell_Gregory_Class" not in result:
+                result["Pell_Gregory_Class"] = normalize_class(combo_match.group(1))
+            if "Pell_Gregory_Position" not in result:
+                result["Pell_Gregory_Position"] = normalize_position(combo_match.group(2))
+            break
+
+        # A2. Dạng mã ngắn: "II-B", "II/B", "II - B", "Class II-B"
+        code_match = re.search(r'\b(?:Class\s*)?(III|II|I)\s*[-–/]\s*([A-C])\b', scope_clean, re.I)
+        if code_match:
+            if "Pell_Gregory_Class" not in result:
+                result["Pell_Gregory_Class"] = normalize_class(code_match.group(1))
+            if "Pell_Gregory_Position" not in result:
+                result["Pell_Gregory_Position"] = normalize_position(code_match.group(2))
+            break
+
+        # A3. Từng trường riêng lẻ có nhãn rõ ràng
+        if "Pell_Gregory_Class" not in result:
+            c_m = re.search(r'(?:Pell\s*(?:&|and)?\s*Gregory|P&G|P&G\s*Class|Class)\s*[:=]\s*(?:Class\s*)?(III|II|I|3|2|1)\b', scope_clean, re.I)
+            if c_m:
+                result["Pell_Gregory_Class"] = normalize_class(c_m.group(1))
+
+        if "Pell_Gregory_Position" not in result:
+            p_m = re.search(r'(?:Position|Pos|P&G\s*Position)\s*[:=]\s*(?:Position\s*)?([ABC])\b', scope_clean, re.I)
+            if p_m:
+                result["Pell_Gregory_Position"] = normalize_position(p_m.group(1))
+
+    # ── B. Trích xuất Winter's Classification ──────────────────
     if "Winter_Class" not in result:
-        w_match = re.search(r'\b(mesioangular|horizontal|vertical|distoangular|buccolingual|others?)\b', text, re.I)
-        if w_match:
-            w_val = w_match.group(1).capitalize()
-            if w_val.startswith("Other"):
-                w_val = "Others"
-            result["Winter_Class"] = w_val
+        for scope in scan_scopes:
+            w_labeled = re.search(r'(?:Winter(?:[\'’]s)?|Angulation|Thế răng)[^\n\r:=]*[:=]\s*([^\n\r,;.]+)', scope, re.I)
+            if w_labeled:
+                w_val = normalize_winter(w_labeled.group(1))
+                if w_val:
+                    result["Winter_Class"] = w_val
+                    break
 
-    # Pell & Gregory Class
-    if "Pell_Gregory_Class" not in result:
-        c_match = re.search(r'(?:class|p&g_class|p&g class)[\"\'\s:]*(?:class\s*)?(iii|ii|i|3|2|1)\b', text, re.I)
-        if c_match:
-            c_val = c_match.group(1).upper()
-            if c_val == "1": c_val = "I"
-            elif c_val == "2": c_val = "II"
-            elif c_val == "3": c_val = "III"
-            result["Pell_Gregory_Class"] = c_val
+            w_direct = normalize_winter(scope)
+            if w_direct:
+                result["Winter_Class"] = w_direct
+                break
 
-    # Pell & Gregory Position
-    if "Pell_Gregory_Position" not in result:
-        p_match = re.search(r'(?:position|p&g_position|p&g position)[\"\'\s:]*(?:position\s*)?([abc])\b', text, re.I)
-        if p_match:
-            result["Pell_Gregory_Position"] = p_match.group(1).upper()
-
-    # Dạng kết hợp P&G (VD: II-B hoặc Class II, Position B)
-    if "Pell_Gregory_Class" not in result or "Pell_Gregory_Position" not in result:
-        combo = re.search(r'\b(I|II|III)\s*[-–/]\s*([A-C])\b', text, re.I)
-        if combo:
-            result["Pell_Gregory_Class"] = combo.group(1).upper()
-            result["Pell_Gregory_Position"] = combo.group(2).upper()
-
-    # Confidence (Độ tin cậy)
+    # ── C. Trích xuất Confidence (Độ tin cậy) ─────────────────
     if "Confidence" not in result:
-        # Ưu tiên tìm kèm từ khóa confidence/%
-        conf_match = re.search(r'(?:confidence|độ tin cậy)[^\n\r]*?(\d{1,3})\s*%', text, re.I)
-        if not conf_match:
-            conf_match = re.search(r'[\"\']?confidence[\"\']?\s*[:=]\s*(\d{1,3})', text, re.I)
-        if not conf_match:
-            conf_match = re.search(r'\(?\b([1-9]\d?|100)\s*%\)?', text)
+        for scope in scan_scopes:
+            c_m = re.search(r'(?:Confidence|Độ tin cậy|Confidence level)[^\n\r:=]*[:=]\s*(\d{1,3})\s*%?', scope, re.I)
+            if c_m:
+                val = int(c_m.group(1))
+                if 0 <= val <= 100:
+                    result["Confidence"] = val
+                    break
 
-        if conf_match:
-            val = int(conf_match.group(1))
-            if 0 <= val <= 100:
-                result["Confidence"] = val
+            c_rev = re.search(r'(\d{1,3})\s*%\s*(?:confidence|độ tin cậy)?', scope, re.I)
+            if c_rev:
+                val = int(c_rev.group(1))
+                if 0 <= val <= 100:
+                    result["Confidence"] = val
+                    break
 
-    # Pederson Level
+    # ── D. Trích xuất Pederson Level ─────────────────────────
     if "Pederson_Level" not in result:
-        if re.search(r'\b(nhẹ|mild|3[-–]4)\b', text, re.I):
-            result["Pederson_Level"] = "Nhẹ (3–4)"
-        elif re.search(r'\b(trung bình|moderate|5[-–]6)\b', text, re.I):
-            result["Pederson_Level"] = "Trung bình (5–6)"
-        elif re.search(r'\b(khó|difficult|high|7[-–]10)\b', text, re.I):
-            result["Pederson_Level"] = "Khó (7–10)"
+        for scope in scan_scopes:
+            ped = normalize_pederson(scope)
+            if ped:
+                result["Pederson_Level"] = ped
+                break
 
     return result
